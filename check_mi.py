@@ -75,7 +75,7 @@ def arg_parser():
     - supported audio/video extensions: """ + str(VIDEO_EXTENSIONS + AUDIO_EXTENSIONS) + """|n
     - output CSV file, has the header raw, and one line for each bad file, providing: file name, error message, 
     file size"""
-
+    
     parser = argparse.ArgumentParser(description='Checks integrity of Media files (Images, Video, Audio).',
                                      epilog=epilog_details, formatter_class=MultilineFormatter)
     parser.add_argument('checkpath', metavar='P', type=str,
@@ -116,7 +116,7 @@ def arg_parser():
                         help='number of seconds to wait for new performed checks in queue, default is 120 sec, you need'
                              ' to raise the default when working with video files (usually) bigger than few GBytes',
                         dest='timeout', default=120)
-
+    
     parse_out = parser.parse_args()
     parse_out.enable_csv = parse_out.csv_filename is not None
     return parse_out
@@ -128,18 +128,18 @@ def setup(configuration):
     enable_images = not configuration.is_disable_image
     enable_media = configuration.is_enable_media
     enable_pdf = not configuration.is_disable_pdf
-
+    
     if enable_extra:
         PIL_EXTENSIONS.extend(PIL_EXTRA_EXTENSIONS)
-
+    
     if enable_images:
         MEDIA_EXTENSIONS += PIL_EXTENSIONS
         if enable_extra:
             MEDIA_EXTENSIONS += MAGICK_EXTENSIONS
-
+    
     if enable_pdf:
         MEDIA_EXTENSIONS += PDF_EXTENSIONS
-
+    
     if enable_media:
         MEDIA_EXTENSIONS += VIDEO_EXTENSIONS + AUDIO_EXTENSIONS
 
@@ -148,7 +148,7 @@ def pil_check(filename):
     img = ImageP.open(filename)  # open the image file
     img.verify()  # verify that it is a good image, without decoding it.. quite fast
     img.close()
-
+    
     # Image manipulation is mandatory to detect few defects
     img = ImageP.open(filename)  # open the image file
     # alternative (removed) version, decode/recode:
@@ -243,7 +243,7 @@ def ffmpeg_check(filename, error_detect='default', threads=0):
         else:
             custom = error_detect
         stream = ffmpeg.input(filename, **{'err_detect': custom, 'threads': threads})
-
+    
     stream = stream.output('pipe:', format="null")
     stream.run(capture_stdout=True, capture_stderr=True)
 
@@ -260,11 +260,11 @@ class TimedLogger:
         self.previous_time = 0
         self.previous_size = 0
         self.start_time = 0
-
+    
     def start(self):
         self.start_time = self.previous_time = time.time()
         return self
-
+    
     def print_log(self, num_files, num_bad_files, total_file_size, wait_min_processed=UPDATE_MB_INTERVAL, force=False):
         if not force and (total_file_size - self.previous_size) < wait_min_processed * (1024 * 1024):
             return
@@ -273,12 +273,12 @@ class TimedLogger:
         if from_previous_delta > UPDATE_SEC_INTERVAL or force:
             self.previous_time = cur_time
             self.previous_size = total_file_size
-
+            
             from_start_delta = cur_time - self.start_time
             speed_MB = total_file_size / (1024 * 1024 * from_start_delta)
             speed_IS = num_files / from_start_delta
             processed_size_MB = float(total_file_size) / (1024 * 1024)
-
+            
             print("Number of bad/processed files:", num_bad_files, "/", num_files, ", size of processed files:", \
                 "{0:0.1f}".format(processed_size_MB), "MB")
             print("Processing speed:", "{0:0.1f}".format(speed_MB), "MB/s, or", "{0:0.1f}".format(
@@ -292,51 +292,62 @@ def is_pil_simd():
 def check_file(filename, error_detect='default', strict_level=0, zero_detect=0, ffmpeg_threads=0):
     if sys.version_info[0] < 3:
         filename = filename.decode('utf8')
-
+    
     file_lowercase = filename.lower()
     file_ext = os.path.splitext(file_lowercase)[1][1:]
-
+    
     file_size = 'NA'
-
+    
     try:
         file_size = check_size(filename)
         if zero_detect > 0:
             check_zeros(filename, CONFIG.zero_detect)
-
+        
         if file_ext in PIL_EXTENSIONS:
             if strict_level in [1, 2]:
                 pil_check(filename)
             if strict_level in [0, 2]:
                 magick_identify_check(filename)
-
+        
         if file_ext in PDF_EXTENSIONS:
             if strict_level in [1, 2]:
                 pypdf_check(filename)
             if strict_level in [0, 2]:
                 magick_identify_check(filename)
-
+        
         if file_ext in MAGICK_EXTENSIONS:
             if strict_level in [1, 2]:
                 magick_check(filename)
             if strict_level in [0, 2]:
                 magick_identify_check(filename)
-
+        
         if file_ext in VIDEO_EXTENSIONS:
             ffmpeg_check(filename, error_detect=error_detect, threads=ffmpeg_threads)
-
+    
     # except ffmpeg.Error as e:
     #     # print e.stderr
     #     return False, (filename, str(e), file_size)
     except Exception as e:
         # IMHO "Exception" is NOT too broad, io/decode/any problem should be (with details) an image problem
         return False, (filename, str(e), file_size)
-
+    
     return True, (filename, None, file_size)
 
 
 def log_check_outcome(check_outcome_detail):
     print("Bad file:", check_outcome_detail[0], ", error detail:", check_outcome_detail[
         1], ", size[bytes]:", check_outcome_detail[2])
+    
+    # Move the bad file to the 'bad' directory
+    bad_dir = os.path.join(os.path.dirname(check_outcome_detail[0]), 'bad')
+    os.makedirs(bad_dir, exist_ok=True)
+    bad_file_path = os.path.join(bad_dir, os.path.basename(check_outcome_detail[0]))
+    
+    try:
+        os.rename(check_outcome_detail[0], bad_file_path)
+        print(f"Moved bad file to: {bad_file_path}")
+    except Exception as e:
+        print(f"Error moving file {check_outcome_detail[0]} to {bad_file_path}: {e}")
 
 
 def worker(in_queue, out_queue, CONFIG):
@@ -361,13 +372,13 @@ def main():
         print("Pillow-SIMD is a 4x faster drop-in replacement of the base PIL module.")
         print("Uninstalling Pillow PIL and installing Pillow-SIMD is a good idea.")
         print("**********************************************************************")
-
+    
     CONFIG = arg_parser()
     setup(CONFIG)
     check_path = CONFIG.checkpath
-
+    
     print("Files integrity check for:", check_path)
-
+    
     if os.path.isfile(check_path):
         # manage single file check
         is_success = check_file(check_path, CONFIG.error_detect)
@@ -378,58 +389,58 @@ def main():
         else:
             print("File", check_path, "is OK")
             sys.exit(0)
-
+    
     # manage folder (searches media files into)
-
+    
     # initializations
     count = 0
     count_bad = 0
     total_file_size = 0
     bad_files_info = [("file_name", "error_message", "file_size[bytes]")]
     timed_logger = TimedLogger().start()
-
+    
     task_queue = Queue()
     out_queue = Queue()
     pre_count = 0
-
+    
     for root, sub_dirs, files in os.walk(check_path):
         
         media_files = []
         for filename in files:
             if is_target_file(filename):
                 media_files.append(filename)
-
+        
         pre_count += len(media_files)
-
+        
         for filename in media_files:
             full_filename = os.path.join(root, filename)
             task_queue.put(full_filename)
-
+        
         if not CONFIG.is_recurse:
             break  # we only check the root folder
-
+    
     for i in range(CONFIG.threads):
         p = Process(target=worker, args=(task_queue, out_queue, CONFIG))
         p.start()
-
+    
     # consume the outcome
     try:
         for j in range(pre_count):
-
+            
             count += 1
-
+            
             is_success = out_queue.get(block=True, timeout=CONFIG.timeout)
             file_size = is_success[1][2]
             if file_size != 'NA':
                 total_file_size += file_size
-
+            
             if not is_success[0]:
                 check_outcome_detail = is_success[1]
                 count_bad += 1
                 bad_files_info.append(check_outcome_detail)
                 log_check_outcome(check_outcome_detail)
                 # print "RATIO:", count_bad, "/", count
-
+            
             # visualization logs and stats
             timed_logger.print_log(count, count_bad, total_file_size)
     except Empty as e:
